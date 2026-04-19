@@ -5,6 +5,7 @@ import android.view.ViewGroup
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
+import androidx.core.content.ContextCompat
 import com.example.myapplication.data.Expense
 import com.example.myapplication.databinding.ExpenseItemBinding
 import java.text.SimpleDateFormat
@@ -33,13 +34,23 @@ class ExpenseAdapter : ListAdapter<Expense, ExpenseAdapter.ExpenseViewHolder>(Ex
     }
 
     class ExpenseViewHolder(private val binding: ExpenseItemBinding) : RecyclerView.ViewHolder(binding.root) {
-        private val dateFormat = SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.getDefault())
+        private val dateFormat = SimpleDateFormat("MMM dd, yyyy • hh:mm a", Locale.getDefault())
 
         fun bind(expense: Expense, onClick: (Expense) -> Unit, onLongClick: (Expense) -> Unit) {
             binding.tvTitle.text = expense.title
             binding.tvCategory.text = expense.category
             binding.tvDate.text = dateFormat.format(Date(expense.date))
-            binding.tvAmount.text = String.format("₹%.2f", expense.amount)
+            
+            val context = binding.root.context
+            if (expense.type == "INCOME") {
+                binding.tvAmount.text = String.format("+ ₹%.2f", expense.amount)
+                binding.tvAmount.setTextColor(ContextCompat.getColor(context, R.color.income_green))
+                binding.indicator.setBackgroundColor(ContextCompat.getColor(context, R.color.income_green))
+            } else {
+                binding.tvAmount.text = String.format("- ₹%.2f", expense.amount)
+                binding.tvAmount.setTextColor(ContextCompat.getColor(context, R.color.expense_red))
+                binding.indicator.setBackgroundColor(ContextCompat.getColor(context, R.color.expense_red))
+            }
 
             binding.root.setOnClickListener { onClick(expense) }
             binding.root.setOnLongClickListener {

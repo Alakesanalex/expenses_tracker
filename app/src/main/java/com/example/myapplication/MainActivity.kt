@@ -18,12 +18,14 @@ import androidx.activity.viewModels
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.example.myapplication.data.Expense
 import com.example.myapplication.data.ExpenseViewModel
 import com.example.myapplication.databinding.ActivityMainBinding
 import com.example.myapplication.databinding.DialogAddExpenseBinding
 import com.example.myapplication.databinding.DialogExpenseDetailsBinding
+import com.example.myapplication.util.DataParser
 import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
@@ -44,13 +46,53 @@ class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private val expenseViewModel: ExpenseViewModel by viewModels()
     private val adapter = ExpenseAdapter()
-    private val categories = arrayOf("Food", "Transport", "Shopping", "Entertainment", "Utilities", "Other")
+    private val expenseCategories = arrayOf("Food", "Transport", "Shopping", "Entertainment", "Utilities", "Rent", "Health", "Other")
+    private val incomeCategories = arrayOf("Salary", "Business", "Investment", "Gift", "Freelance", "Other")
+    private val dataParser = DataParser()
     private lateinit var fusedLocationClient: FusedLocationProviderClient
     private var currentLocation: String? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        val splashScreen = installSplashScreen()
         super.onCreate(savedInstanceState)
-        binding = ActivityMainBinding.inflate(layoutInflater)
+        
+        // Keep the splash screen on-screen for a bit longer (e.g., 1.5 seconds)
+        var keepSplashScreen = true
+        splashScreen.setKeepOnScreenCondition { keepSplashScreen }
+        binding = ActivityMainBinding.inflate(layoutInflater).also {
+            it.root.postDelayed({ keepSplashScreen = false }, 1500)
+        }
+
+        // Add exit animation for the splash screen
+        splashScreen.setOnExitAnimationListener { splashScreenProvider ->
+            val splashScreenView = splashScreenProvider.view
+            
+            // Create a fade out and scale up animation for the "slowly open" effect
+            val fadeOut = android.view.animation.AlphaAnimation(1f, 0f)
+            fadeOut.duration = 800
+            
+            val scaleUp = android.view.animation.ScaleAnimation(
+                1f, 1.5f, 1f, 1.5f,
+                android.view.animation.Animation.RELATIVE_TO_SELF, 0.5f,
+                android.view.animation.Animation.RELATIVE_TO_SELF, 0.5f
+            )
+            scaleUp.duration = 800
+            
+            val animationSet = android.view.animation.AnimationSet(true)
+            animationSet.addAnimation(fadeOut)
+            animationSet.addAnimation(scaleUp)
+            
+            animationSet.setAnimationListener(object : android.view.animation.Animation.AnimationListener {
+                override fun onAnimationStart(animation: android.view.animation.Animation?) {}
+                override fun onAnimationEnd(animation: android.view.animation.Animation?) {
+                    splashScreenProvider.remove()
+                }
+                override fun onAnimationRepeat(animation: android.view.animation.Animation?) {}
+            })
+            
+            splashScreenView.startAnimation(animationSet)
+        }
+
         setContentView(binding.root)
 
         setSupportActionBar(binding.toolbar)
@@ -63,6 +105,19 @@ class MainActivity : AppCompatActivity() {
 
         binding.fabAdd.setOnClickListener {
             showAddExpenseDialog(null)
+        }
+
+        binding.btnScanDashboard.setOnClickListener {
+            val options = arrayOf("Camera", "Gallery")
+            AlertDialog.Builder(this)
+                .setTitle("Select Source")
+                .setItems(options) { _, which ->
+                    when (which) {
+                        0 -> takePictureLauncher.launch()
+                        1 -> pickImageLauncher.launch("image/*")
+                    }
+                }
+                .show()
         }
         
         adapter.setOnClickListener { expense ->
@@ -79,7 +134,16 @@ class MainActivity : AppCompatActivity() {
         val dateFormat = SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.getDefault())
 
         detailBinding.tvDetailTitle.text = expense.title
-        detailBinding.tvDetailAmount.text = String.format("₹%.2f", expense.amount)
+        
+        val context = detailBinding.root.context
+        if (expense.type == "INCOME") {
+            detailBinding.tvDetailAmount.text = String.format("+ ₹%.2f", expense.amount)
+            detailBinding.tvDetailAmount.setTextColor(ContextCompat.getColor(context, R.color.income_green))
+        } else {
+            detailBinding.tvDetailAmount.text = String.format("- ₹%.2f", expense.amount)
+            detailBinding.tvDetailAmount.setTextColor(ContextCompat.getColor(context, R.color.expense_red))
+        }
+
         detailBinding.tvDetailCategory.text = expense.category
         detailBinding.tvDetailDate.text = dateFormat.format(Date(expense.date))
         detailBinding.tvDetailLocation.text = expense.location ?: "No location saved"
@@ -251,8 +315,12 @@ class MainActivity : AppCompatActivity() {
 
     private val pickImageLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         uri?.let {
-            val image = InputImage.fromFilePath(this, it)
-            processImage(image)
+            try {
+                val image = InputImage.fromFilePath(this, it)
+                processImage(image)
+            } catch (e: Exception) {
+                Toast.makeText(this, "Failed to load image", Toast.LENGTH_SHORT).show()
+            }
         }
     }
 
@@ -268,97 +336,27 @@ class MainActivity : AppCompatActivity() {
         recognizer.process(image)
             .addOnSuccessListener { visionText ->
                 if (visionText.text.isBlank()) {
-                    Toast.makeText(this, "No text found in image", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "Scanning failed: No text detected. Try cleaning the lens or better lighting.", Toast.LENGTH_LONG).show()
                 } else {
+                    // Log the full text to Logcat for debugging if it still fails
+                    android.util.Log.d("OCR_TEXT", visionText.text)
                     extractDataFromText(visionText.text)
                 }
             }
             .addOnFailureListener { e ->
-                Toast.makeText(this, "Error: ${e.message}", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "ML Kit Error: ${e.message}", Toast.LENGTH_LONG).show()
             }
     }
 
     private fun extractDataFromText(text: String) {
-        val lines = text.split("\n")
-        val fullTextLower = text.lowercase()
-        
-        // 1. Extract Store Name
-        val storeName = lines.find { it.any { char -> char.isLetter() } }?.trim() ?: "Scanned Bill"
-
-        // 2. Extract Amount
-        val decimalRegex = Regex("""\d+[.,]\d{2}""")
-        val decimalMatches = decimalRegex.findAll(text)
-        var amount = decimalMatches.map { it.value.replace(",", ".").toDoubleOrNull() }
-            .filterNotNull()
-            .maxOrNull()
-
-        if (amount == null) {
-            val intRegex = Regex("""\d+""")
-            amount = intRegex.findAll(text)
-                .map { it.value.toDoubleOrNull() }
-                .filterNotNull()
-                .filter { it < 100000 }
-                .maxOrNull()
-        }
-
-        // 3. Extract Date and Time
-        val dateRegex = Regex("""(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})""")
-        val timeRegex = Regex("""(\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM|am|pm)?)""")
-        
-        val dateMatch = dateRegex.find(text)?.value
-        val timeMatch = timeRegex.find(text)?.value
-        
-        val dateLong = try {
-            val calendar = Calendar.getInstance()
-            
-            dateMatch?.let {
-                val cleanDate = it.replace("-", "/")
-                val parts = cleanDate.split("/")
-                val day = parts[0].toInt()
-                val month = parts[1].toInt() - 1 // Calendar months are 0-based
-                val yearStr = parts[2]
-                val year = if (yearStr.length == 2) 2000 + yearStr.toInt() else yearStr.toInt()
-                calendar.set(year, month, day)
-            }
-            
-            timeMatch?.let {
-                val isPM = it.lowercase().contains("pm")
-                val isAM = it.lowercase().contains("am")
-                val cleanTime = it.replace("AM", "", true).replace("PM", "", true).trim()
-                val timeParts = cleanTime.split(":")
-                var hour = timeParts[0].toInt()
-                val minute = timeParts[1].toInt()
-                
-                if (isPM && hour < 12) hour += 12
-                if (isAM && hour == 12) hour = 0
-                
-                calendar.set(Calendar.HOUR_OF_DAY, hour)
-                calendar.set(Calendar.MINUTE, minute)
-            }
-            
-            calendar.timeInMillis
-        } catch (e: Exception) {
-            System.currentTimeMillis()
-        }
-
-        // 4. Extract Category (Basic Keyword Mapping)
-        var detectedCategory = "Other"
-        val categoryKeywords = mapOf(
-            "Food" to listOf("restaurant", "cafe", "food", "grocery", "market", "pizza", "burger", "dinner", "lunch", "breakfast", "eat"),
-            "Transport" to listOf("uber", "ola", "taxi", "fuel", "petrol", "diesel", "metro", "train", "bus", "flight"),
-            "Shopping" to listOf("mall", "store", "amazon", "flipkart", "clothing", "fashion", "electronics"),
-            "Entertainment" to listOf("movie", "cinema", "netflix", "theatre", "gaming", "club", "bar"),
-            "Utilities" to listOf("bill", "electricity", "water", "gas", "recharge", "internet", "wifi")
+        val scannedData = dataParser.parse(text)
+        showAddExpenseDialog(
+            null,
+            scannedData.amount,
+            scannedData.title,
+            scannedData.date,
+            scannedData.category
         )
-
-        for ((category, keywords) in categoryKeywords) {
-            if (keywords.any { fullTextLower.contains(it) }) {
-                detectedCategory = category
-                break
-            }
-        }
-
-        showAddExpenseDialog(null, amount, storeName, dateLong, detectedCategory)
     }
 
     private fun showDeleteConfirmation(expense: Expense) {
@@ -380,10 +378,32 @@ class MainActivity : AppCompatActivity() {
     private fun observeViewModel() {
         expenseViewModel.allExpenses.observe(this) { expenses ->
             adapter.submitList(expenses)
+            updateDashboard(expenses)
+        }
+    }
+
+    private fun updateDashboard(expenses: List<Expense>) {
+        val calendar = Calendar.getInstance()
+        val currentMonth = calendar.get(Calendar.MONTH)
+        val currentYear = calendar.get(Calendar.YEAR)
+
+        val thisMonthExpenses = expenses.filter {
+            val date = Calendar.getInstance().apply { timeInMillis = it.date }
+            date.get(Calendar.MONTH) == currentMonth && date.get(Calendar.YEAR) == currentYear
         }
 
-        expenseViewModel.totalExpenses.observe(this) { total ->
-            binding.tvTotalAmount.text = String.format("₹%.2f", total ?: 0.0)
+        val totalIncome = thisMonthExpenses.filter { it.type == "INCOME" }.sumOf { it.amount }
+        val totalExpense = thisMonthExpenses.filter { it.type == "EXPENSE" }.sumOf { it.amount }
+        val balance = totalIncome - totalExpense
+
+        binding.tvIncomeAmount.text = String.format("₹%.2f", totalIncome)
+        binding.tvExpenseAmount.text = String.format("₹%.2f", totalExpense)
+        binding.tvBalanceAmount.text = String.format("₹%.2f", balance)
+
+        if (balance < 0) {
+            binding.tvBalanceAmount.setTextColor(ContextCompat.getColor(this, android.R.color.holo_red_dark))
+        } else {
+            binding.tvBalanceAmount.setTextColor(ContextCompat.getColor(this, android.R.color.holo_green_dark))
         }
     }
 
@@ -396,20 +416,38 @@ class MainActivity : AppCompatActivity() {
     ) {
         val dialogBinding = DialogAddExpenseBinding.inflate(layoutInflater)
         
+        val typeAdapter = ArrayAdapter(this, android.R.layout.simple_dropdown_item_1line, arrayOf("EXPENSE", "INCOME"))
+        dialogBinding.etType.setAdapter(typeAdapter)
+
+        fun updateCategoryAdapter(type: String) {
+            val cats = if (type == "INCOME") incomeCategories else expenseCategories
+            val categoryAdapter = ArrayAdapter(this, android.R.layout.simple_dropdown_item_1line, cats)
+            dialogBinding.etCategory.setAdapter(categoryAdapter)
+            // Clear or reset category if it's not in the new list
+            if (existingExpense == null && !cats.contains(dialogBinding.etCategory.text.toString())) {
+                dialogBinding.etCategory.setText("", false)
+            }
+        }
+
+        dialogBinding.etType.setOnItemClickListener { _, _, _, _ ->
+            updateCategoryAdapter(dialogBinding.etType.text.toString())
+        }
+
         // Refresh location and pass binding to update field when found
         fetchLocation(dialogBinding)
-
-        val categoryAdapter = ArrayAdapter(this, android.R.layout.simple_dropdown_item_1line, categories)
-        dialogBinding.etCategory.setAdapter(categoryAdapter)
 
         var expenseDate = System.currentTimeMillis()
 
         existingExpense?.let {
+            dialogBinding.etType.setText(it.type, false)
+            updateCategoryAdapter(it.type)
             dialogBinding.etTitle.setText(it.title)
             dialogBinding.etAmount.setText(it.amount.toString())
             dialogBinding.etCategory.setText(it.category, false)
             dialogBinding.etLocation.setText(it.location)
             expenseDate = it.date
+        } ?: run {
+            updateCategoryAdapter("EXPENSE")
         }
         
         scannedAmount?.let { dialogBinding.etAmount.setText(it.toString()) }
@@ -442,6 +480,7 @@ class MainActivity : AppCompatActivity() {
                 val amount = dialogBinding.etAmount.text.toString().toDoubleOrNull()
                 val category = dialogBinding.etCategory.text.toString()
                 val location = dialogBinding.etLocation.text.toString()
+                val type = dialogBinding.etType.text.toString()
 
                 if (title.isNotEmpty() && amount != null && category.isNotEmpty()) {
                     if (existingExpense == null) {
@@ -450,7 +489,8 @@ class MainActivity : AppCompatActivity() {
                             amount = amount,
                             date = expenseDate,
                             category = category,
-                            location = location
+                            location = location,
+                            type = type
                         )
                         expenseViewModel.insert(expense)
                     } else {
@@ -459,7 +499,8 @@ class MainActivity : AppCompatActivity() {
                             amount = amount,
                             category = category,
                             date = expenseDate,
-                            location = location
+                            location = location,
+                            type = type
                         )
                         expenseViewModel.update(updatedExpense)
                     }
