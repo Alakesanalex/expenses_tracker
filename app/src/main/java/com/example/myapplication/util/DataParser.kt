@@ -58,12 +58,16 @@ class DataParser {
 
     private fun extractAmount(text: String): Double? {
         val lines = text.split("\n")
-        val totalKeywords = listOf("total", "net amt", "grand total", "payable", "balance", "gpay", "paid", "amount", "sum", "wallet", "cash", "amt", "net total")
+        val totalKeywords = listOf(
+            "total", "net amt", "grand total", "payable", "balance", "gpay", "paid", 
+            "amount", "sum", "wallet", "cash", "amt", "net total", "subtotal", "sub total",
+            "bill amount", "sale", "total(inr)", "total payable", "total amount", "amount due"
+        )
         
         val candidates = mutableListOf<Pair<Double, Int>>() // Value and Score
 
-        // Pattern for numbers like 248.00, 1,248.50, 248
-        val numberRegex = Regex("""\d{1,3}(?:[.,\s]\d{3})*[.,]\d{2}|\d+""")
+        // Improved regex to capture numbers with optional decimals (1 or 2 digits) and optional spaces
+        val numberRegex = Regex("""(?:\d{1,3}(?:[.,\s]\d{3})*|[0-9]+)(?:\s?[.,]\s?\d{1,2})?""")
 
         for (i in lines.indices) {
             val line = lines[i]
@@ -73,17 +77,23 @@ class DataParser {
             val matches = numberRegex.findAll(line).toList()
             for (match in matches) {
                 val value = parseNumber(match.value) ?: continue
-                if (value <= 0 || value > 500000) continue
+                if (value <= 0 || value > 1000000) continue
 
                 var score = 0
                 if (hasKeyword) score += 60
                 
+                // Bonus for specific strong keywords
+                if (lowerLine.contains("total") || lowerLine.contains("payable") || lowerLine.contains("net")) score += 10
+
                 // If the number is at the very end of the line, it's more likely a total
                 if (match.range.last >= line.length - 4) score += 20
                 
                 // Numbers with decimals are more likely to be prices
                 if (match.value.contains(".") || match.value.contains(",")) score += 10
                 
+                // Bonus for currency symbols nearby in the same line
+                if (line.contains("₹") || line.contains("Rs") || line.contains("INR")) score += 20
+
                 candidates.add(value to score)
             }
 
@@ -92,13 +102,13 @@ class DataParser {
                 val nextLineMatches = numberRegex.findAll(lines[i+1]).toList()
                 if (nextLineMatches.isNotEmpty()) {
                     val value = parseNumber(nextLineMatches.first().value)
-                    if (value != null && value > 0) candidates.add(value to 40)
+                    if (value != null && value > 0) candidates.add(value to 50)
                 }
             }
         }
 
         if (candidates.isNotEmpty()) {
-            // Pick highest score, then highest value
+            // Pick highest score, then highest value (Total is usually the largest amount)
             val best = candidates.sortedWith(compareByDescending<Pair<Double, Int>> { it.second }.thenByDescending { it.first }).first()
             Log.d(TAG, "Amount detected with score ${best.second}: ${best.first}")
             return best.first

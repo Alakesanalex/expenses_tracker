@@ -2,6 +2,7 @@ package com.example.myapplication
 
 import android.net.Uri
 import android.os.Bundle
+import android.os.Environment
 import android.view.LayoutInflater
 import android.graphics.Bitmap
 import android.Manifest
@@ -13,11 +14,14 @@ import android.view.MenuItem
 import android.widget.ArrayAdapter
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.activity.result.launch
 import androidx.activity.viewModels
+import android.widget.Button
+import android.widget.LinearLayout
+import android.widget.TextView
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.example.myapplication.data.Expense
@@ -36,6 +40,7 @@ import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import java.io.BufferedReader
+import java.io.File
 import java.io.InputStreamReader
 import java.io.OutputStream
 import java.text.SimpleDateFormat
@@ -51,6 +56,7 @@ class MainActivity : AppCompatActivity() {
     private val dataParser = DataParser()
     private lateinit var fusedLocationClient: FusedLocationProviderClient
     private var currentLocation: String? = null
+    private var photoUri: Uri? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         val splashScreen = installSplashScreen()
@@ -113,7 +119,7 @@ class MainActivity : AppCompatActivity() {
                 .setTitle("Select Source")
                 .setItems(options) { _, which ->
                     when (which) {
-                        0 -> takePictureLauncher.launch()
+                        0 -> startCamera()
                         1 -> pickImageLauncher.launch("image/*")
                     }
                 }
@@ -179,6 +185,10 @@ class MainActivity : AppCompatActivity() {
                 exportData()
                 true
             }
+            R.id.action_export_excel -> {
+                exportToExcel()
+                true
+            }
             R.id.action_import -> {
                 importData()
                 true
@@ -198,6 +208,39 @@ class MainActivity : AppCompatActivity() {
     private fun exportData() {
         val date = SimpleDateFormat("yyyyMMdd_HHmm", Locale.getDefault()).format(Date())
         exportLauncher.launch("expenses_backup_$date.json")
+    }
+
+    private val exportExcelLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")) { uri ->
+        uri?.let { saveExcelFile(it) }
+    }
+
+    private fun exportToExcel() {
+        val date = SimpleDateFormat("yyyyMMdd_HHmm", Locale.getDefault()).format(Date())
+        exportExcelLauncher.launch("expenses_$date.xlsx")
+    }
+
+    private fun saveExcelFile(uri: Uri) {
+        val expenses = expenseViewModel.allExpenses.value ?: return
+        val csvHeader = "ID,Title,Amount,Category,Date,Location,Type\n"
+        val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
+        
+        val csvContent = StringBuilder(csvHeader)
+        expenses.forEach { expense ->
+            val escapedTitle = expense.title.replace("\"", "\"\"")
+            val escapedCategory = expense.category.replace("\"", "\"\"")
+            val escapedLocation = (expense.location ?: "").replace("\"", "\"\"")
+            val line = "${expense.id},\"$escapedTitle\",${expense.amount},\"$escapedCategory\",\"${dateFormat.format(Date(expense.date))}\",\"$escapedLocation\",${expense.type}\n"
+            csvContent.append(line)
+        }
+
+        try {
+            contentResolver.openOutputStream(uri)?.use { outputStream ->
+                outputStream.write(csvContent.toString().toByteArray())
+            }
+            Toast.makeText(this, "Excel compatible file exported successfully", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            Toast.makeText(this, "Export failed: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun importData() {
@@ -248,7 +291,7 @@ class MainActivity : AppCompatActivity() {
             calendar.set(Calendar.MINUTE, 0)
             calendar.set(Calendar.SECOND, 0)
             val weekStart = calendar.timeInMillis
-            expenses.filter { it.date >= weekStart }
+            expenses.filter { it.date >= weekStart && it.type == "EXPENSE" }
         } else {
             calendar.timeInMillis = now
             calendar.set(Calendar.DAY_OF_MONTH, 1)
@@ -256,25 +299,44 @@ class MainActivity : AppCompatActivity() {
             calendar.set(Calendar.MINUTE, 0)
             calendar.set(Calendar.SECOND, 0)
             val monthStart = calendar.timeInMillis
-            expenses.filter { it.date >= monthStart }
+            expenses.filter { it.date >= monthStart && it.type == "EXPENSE" }
+        }
+
+        if (filteredExpenses.isEmpty()) {
+            AlertDialog.Builder(this)
+                .setTitle("$type Expense Report")
+                .setMessage("No expenses found for this period.")
+                .setPositiveButton("OK", null)
+                .show()
+            return
         }
 
         val total = filteredExpenses.sumOf { it.amount }
         val categoryTotals = filteredExpenses.groupBy { it.category }
             .mapValues { entry -> entry.value.sumOf { it.amount } }
 
-        val reportMessage = StringBuilder()
-        reportMessage.append("Total: ₹%.2f\n\n".format(total))
-        reportMessage.append("By Category:\n")
+        val dialogView = layoutInflater.inflate(R.layout.dialog_report, null)
+        val tvTitle = dialogView.findViewById<TextView>(R.id.tvReportTitle)
+        val tvTotal = dialogView.findViewById<TextView>(R.id.tvReportTotal)
+        val llBreakdown = dialogView.findViewById<LinearLayout>(R.id.llCategoryBreakdown)
+        val btnOk = dialogView.findViewById<Button>(R.id.btnReportOk)
+
+        tvTitle.text = "$type Expense Report"
+        tvTotal.text = "₹%.2f".format(total)
+
         categoryTotals.forEach { (category, amount) ->
-            reportMessage.append("- $category: ₹%.2f\n".format(amount))
+            val itemView = layoutInflater.inflate(R.layout.item_report_category, llBreakdown, false)
+            itemView.findViewById<TextView>(R.id.tvCategoryName).text = category
+            itemView.findViewById<TextView>(R.id.tvCategoryAmount).text = "₹%.2f".format(amount)
+            llBreakdown.addView(itemView)
         }
 
-        AlertDialog.Builder(this)
-            .setTitle("$type Expense Report")
-            .setMessage(if (filteredExpenses.isEmpty()) "No expenses found for this period." else reportMessage.toString())
-            .setPositiveButton("OK", null)
-            .show()
+        val dialog = AlertDialog.Builder(this)
+            .setView(dialogView)
+            .create()
+
+        btnOk.setOnClickListener { dialog.dismiss() }
+        dialog.show()
     }
 
     private fun requestLocationPermission() {
@@ -313,6 +375,16 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun startCamera() {
+        val photoFile = File.createTempFile(
+            "IMG_${System.currentTimeMillis()}_",
+            ".jpg",
+            getExternalFilesDir(Environment.DIRECTORY_PICTURES)
+        )
+        photoUri = FileProvider.getUriForFile(this, "${packageName}.fileprovider", photoFile)
+        takePictureLauncher.launch(photoUri)
+    }
+
     private val pickImageLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         uri?.let {
             try {
@@ -324,10 +396,16 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private val takePictureLauncher = registerForActivityResult(ActivityResultContracts.TakePicturePreview()) { bitmap ->
-        bitmap?.let {
-            val image = InputImage.fromBitmap(it, 0)
-            processImage(image)
+    private val takePictureLauncher = registerForActivityResult(ActivityResultContracts.TakePicture()) { success ->
+        if (success) {
+            photoUri?.let { uri ->
+                try {
+                    val image = InputImage.fromFilePath(this, uri)
+                    processImage(image)
+                } catch (e: Exception) {
+                    Toast.makeText(this, "Failed to load image", Toast.LENGTH_SHORT).show()
+                }
+            }
         }
     }
 
@@ -401,9 +479,9 @@ class MainActivity : AppCompatActivity() {
         binding.tvBalanceAmount.text = String.format("₹%.2f", balance)
 
         if (balance < 0) {
-            binding.tvBalanceAmount.setTextColor(ContextCompat.getColor(this, android.R.color.holo_red_dark))
+            binding.tvBalanceAmount.setTextColor(ContextCompat.getColor(this, R.color.expense_red))
         } else {
-            binding.tvBalanceAmount.setTextColor(ContextCompat.getColor(this, android.R.color.holo_green_dark))
+            binding.tvBalanceAmount.setTextColor(ContextCompat.getColor(this, R.color.income_green))
         }
     }
 
@@ -469,7 +547,7 @@ class MainActivity : AppCompatActivity() {
                     .setTitle("Select Source")
                     .setItems(options) { _, which ->
                         when (which) {
-                            0 -> takePictureLauncher.launch()
+                            0 -> startCamera()
                             1 -> pickImageLauncher.launch("image/*")
                         }
                     }

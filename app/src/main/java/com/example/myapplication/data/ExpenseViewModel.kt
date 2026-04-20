@@ -10,7 +10,7 @@ class ExpenseViewModel(application: Application) : AndroidViewModel(application)
 
     private val repository: ExpenseRepository
     val allExpenses: LiveData<List<Expense>>
-    val totalExpenses: LiveData<Double>
+    val totalExpenses: LiveData<Double?>
 
     init {
         val expenseDao = AppDatabase.getDatabase(application).expenseDao()

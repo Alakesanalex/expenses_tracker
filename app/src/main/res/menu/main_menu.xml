@@ -11,7 +11,11 @@
         app:showAsAction="never" />
     <item
         android:id="@+id/action_export"
-        android:title="Export Data"
+        android:title="Export Data (JSON)"
+        app:showAsAction="never" />
+    <item
+        android:id="@+id/action_export_excel"
+        android:title="Export to Excel"
         app:showAsAction="never" />
     <item
         android:id="@+id/action_import"

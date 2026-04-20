@@ -18,5 +18,5 @@ interface ExpenseDao {
     suspend fun delete(expense: Expense)
 
     @Query("SELECT SUM(amount) FROM expenses")
-    fun getTotalExpenses(): LiveData<Double>
+    fun getTotalExpenses(): LiveData<Double?>
 }
